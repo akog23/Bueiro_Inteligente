@@ -1,0 +1,493 @@
+[
+  {
+    "id": "bi_tab",
+    "type": "tab",
+    "label": "Bueiro Inteligente",
+    "disabled": false,
+    "info": "Fluxo do projeto Bueiro Inteligente: recebe leituras do sensor via MQTT, classifica o nível de obstrução, grava no InfluxDB, comanda o semáforo de LEDs e alerta a equipe pelo Telegram.",
+    "env": [
+      {
+        "name": "TELEGRAM_BOT_TOKEN",
+        "value": "",
+        "type": "str"
+      },
+      {
+        "name": "TELEGRAM_CHAT_ID",
+        "value": "",
+        "type": "str"
+      },
+      {
+        "name": "LINK_DASHBOARD",
+        "value": "",
+        "type": "str"
+      }
+    ]
+  },
+  {
+    "id": "bi_comment",
+    "type": "comment",
+    "z": "bi_tab",
+    "name": "Leituras do sensor → classificação → InfluxDB / Atuador / Telegram",
+    "info": "",
+    "x": 330,
+    "y": 40,
+    "wires": []
+  },
+  {
+    "id": "bi_in_dist",
+    "type": "mqtt in",
+    "z": "bi_tab",
+    "name": "sensor/distancia",
+    "topic": "mackenzie/bueiro-inteligente/+/sensor/distancia",
+    "qos": "0",
+    "datatype": "utf8",
+    "broker": "bi_broker",
+    "nl": false,
+    "rap": true,
+    "rh": 0,
+    "inputs": 0,
+    "x": 140,
+    "y": 120,
+    "wires": [
+      [
+        "bi_proc"
+      ]
+    ]
+  },
+  {
+    "id": "bi_in_obst",
+    "type": "mqtt in",
+    "z": "bi_tab",
+    "name": "sensor/obstrucao",
+    "topic": "mackenzie/bueiro-inteligente/+/sensor/obstrucao",
+    "qos": "0",
+    "datatype": "utf8",
+    "broker": "bi_broker",
+    "nl": false,
+    "rap": true,
+    "rh": 0,
+    "inputs": 0,
+    "x": 140,
+    "y": 180,
+    "wires": [
+      [
+        "bi_proc"
+      ]
+    ]
+  },
+  {
+    "id": "bi_proc",
+    "type": "function",
+    "z": "bi_tab",
+    "name": "Processar leitura",
+    "func": "// Tópico: mackenzie/bueiro-inteligente/{id_bueiro}/sensor/{campo}\nconst partes = msg.topic.split('/');\nconst idBueiro = partes[2];\nconst campo = partes[4];\nconst valor = parseFloat(msg.payload);\n\nif (isNaN(valor)) {\n    node.warn(`Valor inválido em ${msg.topic}: ${msg.payload}`);\n    return null;\n}\n\n// Limites de classificação do nível de obstrução (%)\nconst LIMITE_ATENCAO = 50; // a partir de 50% -> amarelo\nconst LIMITE_CRITICO = 75; // a partir de 75% -> vermelho\n\n// Guarda a última distância de cada bueiro\nconst distancias = flow.get('distancias') || {};\nif (campo === 'distancia') {\n    distancias[idBueiro] = valor;\n    flow.set('distancias', distancias);\n    return null;\n}\n\n// Chegou a obstrução: classifica o nível\nlet status;\nif (valor >= LIMITE_CRITICO) status = 'vermelho';\nelse if (valor >= LIMITE_ATENCAO) status = 'amarelo';\nelse status = 'verde';\n\nmsg.topic = idBueiro;\nmsg.id_bueiro = idBueiro;\nmsg.status = status;\nmsg.obstrucao_pct = valor;\nmsg.distancia_cm = (distancias[idBueiro] !== undefined) ? distancias[idBueiro] : null;\n\nconst cores = { verde: 'green', amarelo: 'yellow', vermelho: 'red' };\nnode.status({ fill: cores[status], shape: 'dot', text: `${idBueiro}: ${valor}% (${status})` });\n\nreturn msg;",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 380,
+    "y": 150,
+    "wires": [
+      [
+        "bi_fn_influx",
+        "bi_fn_atuador",
+        "bi_rbe",
+        "bi_dbg_leitura"
+      ]
+    ]
+  },
+  {
+    "id": "bi_fn_influx",
+    "type": "function",
+    "z": "bi_tab",
+    "name": "Montar ponto InfluxDB",
+    "func": "// Cadastro fixo da localização de cada bueiro (latitude, longitude e endereço).\n// Para adicionar um novo bueiro, basta incluir uma nova linha aqui.\nconst cadastroBueiros = {\n    bueiro01: {\n        latitude: -23.5475,\n        longitude: -46.6520,\n        endereco: 'Rua da Consolação, 930 - Consolação'\n    }\n};\n\nconst local = cadastroBueiros[msg.id_bueiro];\n\nconst campos = {\n    obstrucao_pct: msg.obstrucao_pct,\n    status: msg.status\n};\n\nif (msg.distancia_cm !== null) {\n    campos.distancia_cm = msg.distancia_cm;\n}\n\nif (local) {\n    campos.latitude = local.latitude;\n    campos.longitude = local.longitude;\n    campos.endereco = local.endereco;\n} else {\n    node.warn(`Bueiro ${msg.id_bueiro} sem localização cadastrada.`);\n}\n\n// [campos, tags]\nmsg.payload = [campos, { id_bueiro: msg.id_bueiro }];\nreturn msg;",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 640,
+    "y": 100,
+    "wires": [
+      [
+        "bi_influx_out"
+      ]
+    ]
+  },
+  {
+    "id": "bi_influx_out",
+    "type": "influxdb out",
+    "z": "bi_tab",
+    "influxdb": "bi_influx_cfg",
+    "name": "Gravar leituras",
+    "measurement": "leituras",
+    "precision": "",
+    "retentionPolicy": "",
+    "database": "",
+    "precisionV18FluxV20": "ms",
+    "retentionPolicyV18Flux": "",
+    "org": "SUA_ORGANIZACAO",
+    "bucket": "bueiro_inteligente",
+    "x": 880,
+    "y": 100,
+    "wires": []
+  },
+  {
+    "id": "bi_fn_atuador",
+    "type": "function",
+    "z": "bi_tab",
+    "name": "Montar comando do atuador",
+    "func": "msg.topic = `mackenzie/bueiro-inteligente/${msg.id_bueiro}/atuador/status`;\nmsg.payload = msg.status;\nreturn msg;",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 660,
+    "y": 160,
+    "wires": [
+      [
+        "bi_mqtt_out"
+      ]
+    ]
+  },
+  {
+    "id": "bi_mqtt_out",
+    "type": "mqtt out",
+    "z": "bi_tab",
+    "name": "atuador/status",
+    "topic": "",
+    "qos": "1",
+    "retain": "true",
+    "respTopic": "",
+    "contentType": "",
+    "userProps": "",
+    "correl": "",
+    "expiry": "",
+    "broker": "bi_broker",
+    "x": 900,
+    "y": 160,
+    "wires": []
+  },
+  {
+    "id": "bi_rbe",
+    "type": "rbe",
+    "z": "bi_tab",
+    "name": "Só quando o status muda",
+    "func": "rbe",
+    "gap": "",
+    "start": "",
+    "inout": "out",
+    "septopics": true,
+    "property": "status",
+    "topi": "topic",
+    "x": 650,
+    "y": 220,
+    "wires": [
+      [
+        "bi_switch"
+      ]
+    ]
+  },
+  {
+    "id": "bi_switch",
+    "type": "switch",
+    "z": "bi_tab",
+    "name": "É crítico?",
+    "property": "status",
+    "propertyType": "msg",
+    "rules": [
+      {
+        "t": "eq",
+        "v": "vermelho",
+        "vt": "str"
+      }
+    ],
+    "checkall": "true",
+    "repair": false,
+    "outputs": 1,
+    "x": 850,
+    "y": 220,
+    "wires": [
+      [
+        "bi_fn_tg"
+      ]
+    ]
+  },
+  {
+    "id": "bi_fn_tg",
+    "type": "function",
+    "z": "bi_tab",
+    "name": "Montar alerta Telegram",
+    "func": "const token = env.get('TELEGRAM_BOT_TOKEN');\nconst chatId = env.get('TELEGRAM_CHAT_ID');\n\nif (!token || !chatId) {\n    node.warn('Configure TELEGRAM_BOT_TOKEN e TELEGRAM_CHAT_ID nas variáveis de ambiente da aba.');\n    return null;\n}\n\n// Cadastro dos bueiros (mesmo da function \"Montar ponto InfluxDB\")\nconst cadastroBueiros = {\n    bueiro01: { endereco: 'Rua da Consolação, 930 - Consolação, São Paulo/SP' }\n};\n\n// Endereço do dashboard no Grafana (substitua pelo da sua instância)\nconst LINK_DASHBOARD = env.get('LINK_DASHBOARD') || 'https://SEU-STACK.grafana.net';\n\nconst local = cadastroBueiros[msg.id_bueiro];\nconst endereco = local ? local.endereco : 'Endereço não cadastrado';\n\nconst obstrucao = Number(msg.obstrucao_pct).toFixed(1);\nconst distancia = (msg.distancia_cm !== null && msg.distancia_cm !== undefined)\n    ? `${Number(msg.distancia_cm).toFixed(1)} cm`\n    : 'não disponível';\n\nconst dataHora = new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });\n\nconst texto =\n    `🚨 <b>ALERTA CRÍTICO – BUEIRO INTELIGENTE</b>\\n` +\n    `\\n` +\n    `<b>Bueiro:</b> ${msg.id_bueiro}\\n` +\n    `<b>Endereço:</b> ${endereco}\\n` +\n    `<b>Nível de obstrução:</b> ${obstrucao}%\\n` +\n    `<b>Distância medida:</b> ${distancia}\\n` +\n    `<b>Data/hora:</b> ${dataHora}\\n` +\n    `\\n` +\n    `⚠️ <b>Ação recomendada:</b> encaminhar equipe de zeladoria para limpeza preventiva, ` +\n    `a fim de evitar entupimento e risco de alagamento.\\n` +\n    `\\n` +\n    `📊 <a href=\"${LINK_DASHBOARD}\">Acompanhar no dashboard</a>`;\n\nmsg.url = `https://api.telegram.org/bot${token}/sendMessage`;\nmsg.method = 'POST';\nmsg.headers = { 'Content-Type': 'application/json' };\nmsg.payload = {\n    chat_id: chatId,\n    text: texto,\n    parse_mode: 'HTML',\n    disable_web_page_preview: true\n};\nreturn msg;",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 640,
+    "y": 280,
+    "wires": [
+      [
+        "bi_http"
+      ]
+    ]
+  },
+  {
+    "id": "bi_http",
+    "type": "http request",
+    "z": "bi_tab",
+    "name": "API Telegram (sendMessage)",
+    "method": "use",
+    "ret": "obj",
+    "paytoqs": "ignore",
+    "url": "",
+    "tls": "",
+    "persist": false,
+    "proxy": "",
+    "insecureHTTPParser": false,
+    "authType": "",
+    "senderr": true,
+    "headers": [],
+    "x": 900,
+    "y": 280,
+    "wires": [
+      [
+        "bi_dbg_tg"
+      ]
+    ]
+  },
+  {
+    "id": "bi_dbg_tg",
+    "type": "debug",
+    "z": "bi_tab",
+    "name": "Resposta Telegram",
+    "active": true,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": false,
+    "complete": "payload",
+    "targetType": "msg",
+    "statusVal": "",
+    "statusType": "auto",
+    "x": 1140,
+    "y": 280,
+    "wires": []
+  },
+  {
+    "id": "bi_dbg_leitura",
+    "type": "debug",
+    "z": "bi_tab",
+    "name": "Leitura processada",
+    "active": false,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": false,
+    "complete": "true",
+    "targetType": "full",
+    "statusVal": "",
+    "statusType": "auto",
+    "x": 650,
+    "y": 340,
+    "wires": []
+  },
+  {
+    "id": "bi_comment2",
+    "type": "comment",
+    "z": "bi_tab",
+    "name": "Monitoramento: confirmações do atuador e conexão dos dispositivos",
+    "info": "",
+    "x": 320,
+    "y": 420,
+    "wires": []
+  },
+  {
+    "id": "bi_in_conf",
+    "type": "mqtt in",
+    "z": "bi_tab",
+    "name": "atuador/confirmacao",
+    "topic": "mackenzie/bueiro-inteligente/+/atuador/confirmacao",
+    "qos": "1",
+    "datatype": "utf8",
+    "broker": "bi_broker",
+    "nl": false,
+    "rap": true,
+    "rh": 0,
+    "inputs": 0,
+    "x": 150,
+    "y": 480,
+    "wires": [
+      [
+        "bi_dbg_conf"
+      ]
+    ]
+  },
+  {
+    "id": "bi_dbg_conf",
+    "type": "debug",
+    "z": "bi_tab",
+    "name": "Confirmação do atuador",
+    "active": true,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": true,
+    "complete": "payload",
+    "targetType": "msg",
+    "statusVal": "payload",
+    "statusType": "auto",
+    "x": 430,
+    "y": 480,
+    "wires": []
+  },
+  {
+    "id": "bi_in_conex",
+    "type": "mqtt in",
+    "z": "bi_tab",
+    "name": "+/conexao",
+    "topic": "mackenzie/bueiro-inteligente/+/+/conexao",
+    "qos": "1",
+    "datatype": "utf8",
+    "broker": "bi_broker",
+    "nl": false,
+    "rap": true,
+    "rh": 0,
+    "inputs": 0,
+    "x": 120,
+    "y": 540,
+    "wires": [
+      [
+        "bi_fn_conex"
+      ]
+    ]
+  },
+  {
+    "id": "bi_fn_conex",
+    "type": "function",
+    "z": "bi_tab",
+    "name": "Formatar conexão",
+    "func": "// mackenzie/bueiro-inteligente/{id_bueiro}/{dispositivo}/conexao\nconst partes = msg.topic.split('/');\nmsg.payload = `${partes[2]} / ${partes[3]}: ${msg.payload}`;\nreturn msg;",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 330,
+    "y": 540,
+    "wires": [
+      [
+        "bi_dbg_conex"
+      ]
+    ]
+  },
+  {
+    "id": "bi_dbg_conex",
+    "type": "debug",
+    "z": "bi_tab",
+    "name": "Status de conexão",
+    "active": true,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": true,
+    "complete": "payload",
+    "targetType": "msg",
+    "statusVal": "payload",
+    "statusType": "auto",
+    "x": 550,
+    "y": 540,
+    "wires": []
+  },
+  {
+    "id": "bi_comment3",
+    "type": "comment",
+    "z": "bi_tab",
+    "name": "Tratamento de falhas (InfluxDB e Telegram)",
+    "info": "",
+    "x": 250,
+    "y": 620,
+    "wires": []
+  },
+  {
+    "id": "bi_catch",
+    "type": "catch",
+    "z": "bi_tab",
+    "name": "Erros das integrações",
+    "scope": [
+      "bi_influx_out",
+      "bi_http"
+    ],
+    "uncaught": false,
+    "x": 160,
+    "y": 680,
+    "wires": [
+      [
+        "bi_dbg_erro"
+      ]
+    ]
+  },
+  {
+    "id": "bi_dbg_erro",
+    "type": "debug",
+    "z": "bi_tab",
+    "name": "Log de erros",
+    "active": true,
+    "tosidebar": true,
+    "console": true,
+    "tostatus": false,
+    "complete": "error",
+    "targetType": "msg",
+    "statusVal": "",
+    "statusType": "auto",
+    "x": 390,
+    "y": 680,
+    "wires": []
+  },
+  {
+    "id": "bi_broker",
+    "type": "mqtt-broker",
+    "name": "HiveMQ Público",
+    "broker": "broker.hivemq.com",
+    "port": "1883",
+    "clientid": "bueiro-nodered",
+    "autoConnect": true,
+    "usetls": false,
+    "protocolVersion": "4",
+    "keepalive": "60",
+    "cleansession": true,
+    "autoUnsubscribe": true,
+    "birthTopic": "",
+    "birthQos": "0",
+    "birthPayload": "",
+    "birthMsg": {},
+    "closeTopic": "",
+    "closeQos": "0",
+    "closePayload": "",
+    "closeMsg": {},
+    "willTopic": "",
+    "willQos": "0",
+    "willPayload": "",
+    "willMsg": {},
+    "userProps": "",
+    "sessionExpiry": ""
+  },
+  {
+    "id": "bi_influx_cfg",
+    "type": "influxdb",
+    "hostname": "127.0.0.1",
+    "port": "8086",
+    "protocol": "http",
+    "database": "database",
+    "name": "InfluxDB Cloud",
+    "usetls": false,
+    "tls": "",
+    "influxdbVersion": "2.0",
+    "url": "https://us-east-1-1.aws.cloud2.influxdata.com",
+    "rejectUnauthorized": true
+  }
+]
