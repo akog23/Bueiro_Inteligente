@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "author": "Bueiro Inteligente",
+  "editor": "wokwi",
+  "parts": [
+    { "type": "wokwi-esp32-devkit-v1", "id": "esp32", "top": 60, "left": 0, "attrs": {} },
+    { "type": "wokwi-resistor", "id": "r1", "top": 0, "left": 220, "attrs": { "value": "220" } },
+    { "type": "wokwi-led", "id": "led_verde", "top": -6, "left": 300, "attrs": { "color": "green" } },
+    { "type": "wokwi-resistor", "id": "r2", "top": 60, "left": 220, "attrs": { "value": "220" } },
+    { "type": "wokwi-led", "id": "led_amarelo", "top": 54, "left": 300, "attrs": { "color": "yellow" } },
+    { "type": "wokwi-resistor", "id": "r3", "top": 120, "left": 220, "attrs": { "value": "220" } },
+    { "type": "wokwi-led", "id": "led_vermelho", "top": 114, "left": 300, "attrs": { "color": "red" } }
+  ],
+  "connections": [
+    [ "esp32:D25", "r1:1", "green", [] ],
+    [ "r1:2", "led_verde:A", "green", [] ],
+    [ "led_verde:C", "esp32:GND.1", "black", [] ],
+    [ "esp32:D26", "r2:1", "gold", [] ],
+    [ "r2:2", "led_amarelo:A", "gold", [] ],
+    [ "led_amarelo:C", "esp32:GND.1", "black", [] ],
+    [ "esp32:D27", "r3:1", "red", [] ],
+    [ "r3:2", "led_vermelho:A", "red", [] ],
+    [ "led_vermelho:C", "esp32:GND.1", "black", [] ]
+  ],
+  "dependencies": {}
+}

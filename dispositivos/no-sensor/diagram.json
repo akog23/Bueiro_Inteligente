@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "author": "Bueiro Inteligente",
+  "editor": "wokwi",
+  "parts": [
+    { "type": "wokwi-esp32-devkit-v1", "id": "esp32", "top": 140, "left": 0, "attrs": {} },
+    { "type": "wokwi-hc-sr04", "id": "sonar", "top": 0, "left": 70, "attrs": { "distance": "400" } }
+  ],
+  "connections": [
+    [ "esp32:VIN", "sonar:VCC", "red", [] ],
+    [ "esp32:GND.1", "sonar:GND", "black", [] ],
+    [ "esp32:D5", "sonar:TRIG", "green", [] ],
+    [ "esp32:D18", "sonar:ECHO", "gold", [] ]
+  ],
+  "dependencies": {}
+}
