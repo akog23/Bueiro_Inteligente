@@ -31,7 +31,12 @@ WHERE ordem = 1;
 -- Visualização: Stat | Unit: seconds (s)
 -- Thresholds: Base = verde, 30 = vermelho
 -- ------------------------------------------------------------
-SELECT (CAST(now() AS BIGINT) - CAST(MAX(time) AS BIGINT)) / 1000000000 AS "Última leitura há"
+-- O CASE evita valores negativos quando o relógio do servidor que grava
+-- os dados está alguns segundos adiantado em relação ao InfluxDB.
+SELECT CASE
+         WHEN (CAST(now() AS BIGINT) - CAST(MAX(time) AS BIGINT)) < 0 THEN 0
+         ELSE (CAST(now() AS BIGINT) - CAST(MAX(time) AS BIGINT)) / 1000000000
+       END AS "Última leitura há"
 FROM "leituras"
 WHERE time >= $__timeFrom AND time <= $__timeTo;
 
