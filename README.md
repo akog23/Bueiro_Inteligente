@@ -27,20 +27,20 @@ O entupimento de bueiros (bocas de lobo) por resíduos sólidos é uma das princ
 
 O **Bueiro Inteligente** é um protótipo de Internet das Coisas (IoT) que mede continuamente o nível de obstrução de um bueiro e:
 
-- sinaliza o estado localmente com um **semáforo de LEDs** (verde, amarelo e vermelho);
+- aciona automaticamente uma **grade autolimpante** (servo motor) quando o bueiro atinge o nível crítico;
 - grava o histórico em um **banco de dados de séries temporais em nuvem** (InfluxDB Cloud);
 - apresenta as informações em **dashboards gerenciais** (Grafana Cloud);
-- envia um **alerta automático pelo Telegram** à equipe de manutenção quando o bueiro atinge o nível crítico.
+- envia um **alerta automático pelo Telegram** à equipe de manutenção **somente quando a limpeza automática não resolve** a obstrução.
 
 O projeto está alinhado ao **ODS 11 (Cidades e Comunidades Sustentáveis)**, **meta 11.6** da Agenda 2030 da ONU: reduzir o impacto ambiental negativo das cidades, incluindo a gestão de resíduos. A solução troca a manutenção reativa por uma manutenção **preventiva e orientada por dados**.
 
 ### Classificação do nível de obstrução
 
-| Obstrução | Estado | Semáforo | Ação |
+| Obstrução | Estado | Classificação | Ação |
 |---|---|---|---|
 | Abaixo de 50% | Normal | 🟢 Verde | — |
-| De 50% a 74% | Atenção | 🟡 Amarelo | Acompanhar |
-| 75% ou mais | Crítico | 🔴 Vermelho | Alerta no Telegram para limpeza |
+| De 50% a 74% | Atenção | 🟡 Amarelo | Acompanhar no dashboard |
+| 75% ou mais | Crítico | 🔴 Vermelho | Limpeza automática da grade; alerta no Telegram se a obstrução continuar |
 
 ---
 
@@ -51,7 +51,7 @@ O projeto está alinhado ao **ODS 11 (Cidades e Comunidades Sustentáveis)**, **
 | Camada | Componente | Tecnologia |
 |---|---|---|
 | Percepção | Nó sensor | ESP32 + HC-SR04 (simulado no Wokwi) |
-| Percepção | Nó atuador | ESP32 + 3 LEDs (simulado no Wokwi) |
+| Percepção | Nó atuador | ESP32 + servo motor da grade autolimpante (simulado no Wokwi) |
 | Rede | Broker MQTT | HiveMQ público (`broker.hivemq.com:1883`) |
 | Aplicação | Regras de negócio | Node-RED em máquina virtual AWS EC2 |
 | Aplicação | Banco de dados | InfluxDB Cloud Serverless |
@@ -89,14 +89,15 @@ obstrução (%) = (400 − d) / (400 − 2) × 100     (limitado entre 0% e 100%
 
 As leituras são publicadas a cada 5 segundos.
 
-### Nó atuador (ESP32 + semáforo de LEDs)
+### Nó atuador (ESP32 + servo motor da grade autolimpante)
 
-| Componente | ESP32 |
+| Servo motor | ESP32 |
 |---|---|
-| LED verde + resistor 220 Ω | GPIO 25 |
-| LED amarelo + resistor 220 Ω | GPIO 26 |
-| LED vermelho + resistor 220 Ω | GPIO 27 |
-| Catodos dos LEDs | GND |
+| PWM (sinal) | GPIO 13 |
+| V+ | VIN (5 V) |
+| GND | GND |
+
+Ao receber o comando `limpar`, o servo movimenta a grade em **duas passadas de 0° a 180°** para soltar os resíduos e informa o início (`limpando`) e o fim (`limpeza_concluida`) da limpeza. O controle usa a biblioteca **ESP32Servo**.
 
 <p align="center"><img src="docs/imagens/wokwi-atuador.png" alt="Nó atuador no Wokwi" width="300"></p>
 
@@ -104,6 +105,7 @@ As leituras são publicadas a cada 5 segundos.
 
 - **Comunicação:** em uma implantação real, bueiros ficam no subsolo e espalhados pela cidade, então o meio mais adequado seria o **LoRaWAN** (longo alcance e baixo consumo). No protótipo foi usado Wi-Fi, porque o Wokwi não simula LoRaWAN. A aplicação não muda: o servidor de rede LoRaWAN poderia publicar as leituras no mesmo broker MQTT.
 - **Sensor:** em campo, o ambiente úmido exigiria um sensor ultrassônico à prova d'água, como o **JSN-SR04T**, que funciona da mesma forma que o HC-SR04.
+- **Atuador:** o servo representa, em escala, o mecanismo da grade. Em uma implantação real seria usado um **motorredutor à prova d'água**, com mais torque, acionado pelo mesmo comando MQTT.
 
 ---
 
@@ -120,13 +122,13 @@ mackenzie/bueiro-inteligente/{id_bueiro}/{dispositivo}/{informação}
 | `sensor/distancia` | Sensor → Node-RED | Distância em cm (ex.: `77.6`) | 0 |
 | `sensor/obstrucao` | Sensor → Node-RED | Obstrução em % (ex.: `81.0`) | 0 |
 | `sensor/conexao` | Sensor → Node-RED | `online` / `offline` (LWT) | 1 / retain |
-| `atuador/status` | Node-RED → Atuador | `verde`, `amarelo` ou `vermelho` | 1 / retain |
-| `atuador/confirmacao` | Atuador → Node-RED | Comando executado | 0 |
+| `atuador/comando` | Node-RED → Atuador | `limpar` (ou `repouso`) | 1 / sem retain |
+| `atuador/confirmacao` | Atuador → Node-RED | `limpando` / `limpeza_concluida` | 0 |
 | `atuador/conexao` | Atuador → Node-RED | `online` / `offline` (LWT) | 1 / retain |
 
 Cada dispositivo registra uma mensagem de última vontade (LWT) com o valor `offline`. Se a conexão cair, o próprio broker publica essa mensagem.
 
-> A biblioteca PubSubClient publica apenas com QoS 0. O QoS 1 é aplicado à LWT e aos comandos publicados pelo Node-RED.
+> A biblioteca PubSubClient publica apenas com QoS 0. O QoS 1 é aplicado à LWT e aos comandos publicados pelo Node-RED. O comando de limpeza **não** é retido, para que a grade não repita a limpeza sempre que o atuador reconectar.
 
 ---
 
@@ -138,12 +140,13 @@ A cada leitura de obstrução, o fluxo:
 
 1. **Classifica** o nível (verde, amarelo ou vermelho);
 2. **Grava** a leitura no InfluxDB, com identificação, estado e localização do bueiro;
-3. **Publica** o comando para o semáforo de LEDs (`atuador/status`);
-4. **Envia alerta pelo Telegram** quando o estado muda para crítico. Um filtro *report by exception* garante **um alerta por ocorrência**, e não um a cada 5 segundos.
+3. **Aciona a limpeza automática** quando o estado muda para crítico, publicando `limpar` em `atuador/comando`. Um filtro *report by exception* garante **uma limpeza por ocorrência**, e não uma a cada 5 segundos;
+4. **Verifica o resultado:** ao receber `limpeza_concluida`, aguarda 15 segundos e confere a última leitura do sensor;
+5. **Envia alerta pelo Telegram** somente se a obstrução continuar em 75% ou mais (resíduos grandes demais para a remoção automática), recomendando a limpeza manual. Se a limpeza resolveu, o fluxo apenas registra o resultado.
 
-Um nó `catch` registra erros do InfluxDB e do Telegram sem interromper o comando do semáforo.
+Um nó `catch` registra erros do InfluxDB e do Telegram sem interromper o comando de limpeza.
 
-<p align="center"><img src="docs/imagens/alerta-telegram.png" alt="Alertas no Telegram" width="450"></p>
+<p align="center"><img src="docs/imagens/alerta-telegram.png" alt="Alerta no Telegram" width="380"></p>
 
 ---
 
@@ -181,7 +184,7 @@ As consultas SQL de cada painel estão em [`grafana/consultas.sql`](grafana/cons
 
 1. Crie **dois** projetos ESP32 em [wokwi.com](https://wokwi.com).
 2. No primeiro (nó sensor), substitua `sketch.ino`, `diagram.json` e `libraries.txt` pelos arquivos de [`dispositivos/no-sensor`](dispositivos/no-sensor).
-3. No segundo (nó atuador), faça o mesmo com os arquivos de [`dispositivos/no-atuador`](dispositivos/no-atuador).
+3. No segundo (nó atuador), faça o mesmo com os arquivos de [`dispositivos/no-atuador`](dispositivos/no-atuador). O `libraries.txt` já inclui a biblioteca **ESP32Servo**.
 4. Rode as duas simulações ao mesmo tempo, **em janelas separadas e visíveis**. O navegador pausa simulações em abas que ficam em segundo plano.
 5. No sensor, clique no HC-SR04 durante a simulação e arraste a distância para simular o acúmulo de resíduos.
 
@@ -236,7 +239,7 @@ As consultas SQL de cada painel estão em [`grafana/consultas.sql`](grafana/cons
 │   │   ├── sketch.ino
 │   │   ├── diagram.json
 │   │   └── libraries.txt
-│   └── no-atuador/        # ESP32 + semáforo de LEDs
+│   └── no-atuador/        # ESP32 + servo motor (grade autolimpante)
 │       ├── sketch.ino
 │       ├── diagram.json
 │       └── libraries.txt
