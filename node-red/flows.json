@@ -4,7 +4,7 @@
     "type": "tab",
     "label": "Bueiro Inteligente",
     "disabled": false,
-    "info": "Fluxo do projeto Bueiro Inteligente: recebe leituras do sensor via MQTT, classifica o nível de obstrução, grava no InfluxDB, comanda o semáforo de LEDs e alerta a equipe pelo Telegram.",
+    "info": "Fluxo do projeto Bueiro Inteligente: recebe leituras do sensor via MQTT, classifica o nível de obstrução, grava no InfluxDB, aciona a grade autolimpante quando o bueiro fica crítico e alerta a equipe pelo Telegram se a limpeza automática não resolver.",
     "env": [
       {
         "name": "TELEGRAM_BOT_TOKEN",
@@ -27,7 +27,7 @@
     "id": "bi_comment",
     "type": "comment",
     "z": "bi_tab",
-    "name": "Leituras do sensor → classificação → InfluxDB / Atuador / Telegram",
+    "name": "Leituras do sensor → classificação → InfluxDB / limpeza automática",
     "info": "",
     "x": 330,
     "y": 40,
@@ -80,7 +80,7 @@
     "type": "function",
     "z": "bi_tab",
     "name": "Processar leitura",
-    "func": "// Tópico: mackenzie/bueiro-inteligente/{id_bueiro}/sensor/{campo}\nconst partes = msg.topic.split('/');\nconst idBueiro = partes[2];\nconst campo = partes[4];\nconst valor = parseFloat(msg.payload);\n\nif (isNaN(valor)) {\n    node.warn(`Valor inválido em ${msg.topic}: ${msg.payload}`);\n    return null;\n}\n\n// Limites de classificação do nível de obstrução (%)\nconst LIMITE_ATENCAO = 50; // a partir de 50% -> amarelo\nconst LIMITE_CRITICO = 75; // a partir de 75% -> vermelho\n\n// Guarda a última distância de cada bueiro\nconst distancias = flow.get('distancias') || {};\nif (campo === 'distancia') {\n    distancias[idBueiro] = valor;\n    flow.set('distancias', distancias);\n    return null;\n}\n\n// Chegou a obstrução: classifica o nível\nlet status;\nif (valor >= LIMITE_CRITICO) status = 'vermelho';\nelse if (valor >= LIMITE_ATENCAO) status = 'amarelo';\nelse status = 'verde';\n\nmsg.topic = idBueiro;\nmsg.id_bueiro = idBueiro;\nmsg.status = status;\nmsg.obstrucao_pct = valor;\nmsg.distancia_cm = (distancias[idBueiro] !== undefined) ? distancias[idBueiro] : null;\n\nconst cores = { verde: 'green', amarelo: 'yellow', vermelho: 'red' };\nnode.status({ fill: cores[status], shape: 'dot', text: `${idBueiro}: ${valor}% (${status})` });\n\nreturn msg;",
+    "func": "// Tópico: mackenzie/bueiro-inteligente/{id_bueiro}/sensor/{campo}\nconst partes = msg.topic.split('/');\nconst idBueiro = partes[2];\nconst campo = partes[4];\nconst valor = parseFloat(msg.payload);\n\nif (isNaN(valor)) {\n    node.warn(`Valor inválido em ${msg.topic}: ${msg.payload}`);\n    return null;\n}\n\n// Limites de classificação do nível de obstrução (%)\nconst LIMITE_ATENCAO = 50; // a partir de 50% -> amarelo\nconst LIMITE_CRITICO = 75; // a partir de 75% -> vermelho\n\n// Guarda a última distância de cada bueiro\nconst distancias = flow.get('distancias') || {};\nif (campo === 'distancia') {\n    distancias[idBueiro] = valor;\n    flow.set('distancias', distancias);\n    return null;\n}\n\n// Guarda a última obstrução de cada bueiro (usada para verificar a limpeza)\nconst obstrucoes = flow.get('obstrucoes') || {};\nobstrucoes[idBueiro] = valor;\nflow.set('obstrucoes', obstrucoes);\n\n// Classifica o nível\nlet status;\nif (valor >= LIMITE_CRITICO) status = 'vermelho';\nelse if (valor >= LIMITE_ATENCAO) status = 'amarelo';\nelse status = 'verde';\n\nmsg.topic = idBueiro;\nmsg.id_bueiro = idBueiro;\nmsg.status = status;\nmsg.obstrucao_pct = valor;\nmsg.distancia_cm = (distancias[idBueiro] !== undefined) ? distancias[idBueiro] : null;\n\nconst cores = { verde: 'green', amarelo: 'yellow', vermelho: 'red' };\nnode.status({ fill: cores[status], shape: 'dot', text: `${idBueiro}: ${valor}% (${status})` });\n\nreturn msg;",
     "outputs": 1,
     "timeout": 0,
     "noerr": 0,
@@ -92,7 +92,6 @@
     "wires": [
       [
         "bi_fn_influx",
-        "bi_fn_atuador",
         "bi_rbe",
         "bi_dbg_leitura"
       ]
@@ -137,44 +136,6 @@
     "wires": []
   },
   {
-    "id": "bi_fn_atuador",
-    "type": "function",
-    "z": "bi_tab",
-    "name": "Montar comando do atuador",
-    "func": "msg.topic = `mackenzie/bueiro-inteligente/${msg.id_bueiro}/atuador/status`;\nmsg.payload = msg.status;\nreturn msg;",
-    "outputs": 1,
-    "timeout": 0,
-    "noerr": 0,
-    "initialize": "",
-    "finalize": "",
-    "libs": [],
-    "x": 660,
-    "y": 160,
-    "wires": [
-      [
-        "bi_mqtt_out"
-      ]
-    ]
-  },
-  {
-    "id": "bi_mqtt_out",
-    "type": "mqtt out",
-    "z": "bi_tab",
-    "name": "atuador/status",
-    "topic": "",
-    "qos": "1",
-    "retain": "true",
-    "respTopic": "",
-    "contentType": "",
-    "userProps": "",
-    "correl": "",
-    "expiry": "",
-    "broker": "bi_broker",
-    "x": 900,
-    "y": 160,
-    "wires": []
-  },
-  {
     "id": "bi_rbe",
     "type": "rbe",
     "z": "bi_tab",
@@ -187,7 +148,7 @@
     "property": "status",
     "topi": "topic",
     "x": 650,
-    "y": 220,
+    "y": 180,
     "wires": [
       [
         "bi_switch"
@@ -212,10 +173,187 @@
     "repair": false,
     "outputs": 1,
     "x": 850,
-    "y": 220,
+    "y": 180,
+    "wires": [
+      [
+        "bi_fn_limpar"
+      ]
+    ]
+  },
+  {
+    "id": "bi_fn_limpar",
+    "type": "function",
+    "z": "bi_tab",
+    "name": "Montar comando de limpeza",
+    "func": "// Bueiro entrou em estado crítico: aciona a grade autolimpante\nmsg.topic = `mackenzie/bueiro-inteligente/${msg.id_bueiro}/atuador/comando`;\nmsg.payload = 'limpar';\nnode.status({ fill: 'blue', shape: 'dot', text: `limpeza solicitada: ${msg.id_bueiro}` });\nreturn msg;",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 1060,
+    "y": 180,
+    "wires": [
+      [
+        "bi_mqtt_cmd"
+      ]
+    ]
+  },
+  {
+    "id": "bi_mqtt_cmd",
+    "type": "mqtt out",
+    "z": "bi_tab",
+    "name": "atuador/comando",
+    "topic": "",
+    "qos": "1",
+    "retain": "false",
+    "respTopic": "",
+    "contentType": "",
+    "userProps": "",
+    "correl": "",
+    "expiry": "",
+    "broker": "bi_broker",
+    "x": 1290,
+    "y": 180,
+    "wires": []
+  },
+  {
+    "id": "bi_dbg_leitura",
+    "type": "debug",
+    "z": "bi_tab",
+    "name": "Leitura processada",
+    "active": false,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": false,
+    "complete": "true",
+    "targetType": "full",
+    "statusVal": "",
+    "statusType": "auto",
+    "x": 650,
+    "y": 240,
+    "wires": []
+  },
+  {
+    "id": "bi_comment2",
+    "type": "comment",
+    "z": "bi_tab",
+    "name": "Resultado da limpeza → alerta à equipe se a obstrução continuar",
+    "info": "",
+    "x": 330,
+    "y": 320,
+    "wires": []
+  },
+  {
+    "id": "bi_in_conf",
+    "type": "mqtt in",
+    "z": "bi_tab",
+    "name": "atuador/confirmacao",
+    "topic": "mackenzie/bueiro-inteligente/+/atuador/confirmacao",
+    "qos": "1",
+    "datatype": "utf8",
+    "broker": "bi_broker",
+    "nl": false,
+    "rap": true,
+    "rh": 0,
+    "inputs": 0,
+    "x": 150,
+    "y": 380,
+    "wires": [
+      [
+        "bi_dbg_conf",
+        "bi_sw_concluida"
+      ]
+    ]
+  },
+  {
+    "id": "bi_dbg_conf",
+    "type": "debug",
+    "z": "bi_tab",
+    "name": "Confirmação do atuador",
+    "active": true,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": true,
+    "complete": "payload",
+    "targetType": "msg",
+    "statusVal": "payload",
+    "statusType": "auto",
+    "x": 430,
+    "y": 340,
+    "wires": []
+  },
+  {
+    "id": "bi_sw_concluida",
+    "type": "switch",
+    "z": "bi_tab",
+    "name": "Limpeza concluída?",
+    "property": "payload",
+    "propertyType": "msg",
+    "rules": [
+      {
+        "t": "eq",
+        "v": "limpeza_concluida",
+        "vt": "str"
+      }
+    ],
+    "checkall": "true",
+    "repair": false,
+    "outputs": 1,
+    "x": 410,
+    "y": 400,
+    "wires": [
+      [
+        "bi_delay"
+      ]
+    ]
+  },
+  {
+    "id": "bi_delay",
+    "type": "delay",
+    "z": "bi_tab",
+    "name": "Aguardar novas leituras (15 s)",
+    "pauseType": "delay",
+    "timeout": "15",
+    "timeoutUnits": "seconds",
+    "rate": "1",
+    "nbRateUnits": "1",
+    "rateUnits": "second",
+    "randomFirst": "1",
+    "randomLast": "5",
+    "randomUnits": "seconds",
+    "drop": false,
+    "allowrate": false,
+    "outputs": 1,
+    "x": 650,
+    "y": 400,
+    "wires": [
+      [
+        "bi_fn_verifica"
+      ]
+    ]
+  },
+  {
+    "id": "bi_fn_verifica",
+    "type": "function",
+    "z": "bi_tab",
+    "name": "Limpeza resolveu?",
+    "func": "// Após a limpeza, confere a obstrução atual do bueiro\n// Saída 1: limpeza NÃO resolveu (alerta à equipe) | Saída 2: limpeza resolveu\nconst LIMITE_CRITICO = 75;\n\nconst idBueiro = msg.topic.split('/')[2];\nconst obstrucoes = flow.get('obstrucoes') || {};\nconst distancias = flow.get('distancias') || {};\nconst atual = obstrucoes[idBueiro];\n\nif (atual === undefined) {\n    node.warn(`Sem leitura recente do ${idBueiro} para verificar a limpeza.`);\n    return null;\n}\n\nmsg.id_bueiro = idBueiro;\nmsg.obstrucao_pct = atual;\nmsg.distancia_cm = (distancias[idBueiro] !== undefined) ? distancias[idBueiro] : null;\n\nif (atual >= LIMITE_CRITICO) {\n    node.status({ fill: 'red', shape: 'dot', text: `${idBueiro}: não resolveu (${atual}%)` });\n    return [msg, null];\n}\nnode.status({ fill: 'green', shape: 'dot', text: `${idBueiro}: resolvido (${atual}%)` });\nmsg.payload = `${idBueiro}: limpeza automática resolveu (obstrução ${atual}%)`;\nreturn [null, msg];",
+    "outputs": 2,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 890,
+    "y": 400,
     "wires": [
       [
         "bi_fn_tg"
+      ],
+      [
+        "bi_dbg_ok"
       ]
     ]
   },
@@ -224,15 +362,15 @@
     "type": "function",
     "z": "bi_tab",
     "name": "Montar alerta Telegram",
-    "func": "const token = env.get('TELEGRAM_BOT_TOKEN');\nconst chatId = env.get('TELEGRAM_CHAT_ID');\n\nif (!token || !chatId) {\n    node.warn('Configure TELEGRAM_BOT_TOKEN e TELEGRAM_CHAT_ID nas variáveis de ambiente da aba.');\n    return null;\n}\n\n// Cadastro dos bueiros (mesmo da function \"Montar ponto InfluxDB\")\nconst cadastroBueiros = {\n    bueiro01: { endereco: 'Rua da Consolação, 930 - Consolação, São Paulo/SP' }\n};\n\n// Endereço do dashboard no Grafana (substitua pelo da sua instância)\nconst LINK_DASHBOARD = env.get('LINK_DASHBOARD') || 'https://SEU-STACK.grafana.net';\n\nconst local = cadastroBueiros[msg.id_bueiro];\nconst endereco = local ? local.endereco : 'Endereço não cadastrado';\n\nconst obstrucao = Number(msg.obstrucao_pct).toFixed(1);\nconst distancia = (msg.distancia_cm !== null && msg.distancia_cm !== undefined)\n    ? `${Number(msg.distancia_cm).toFixed(1)} cm`\n    : 'não disponível';\n\nconst dataHora = new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });\n\nconst texto =\n    `🚨 <b>ALERTA CRÍTICO – BUEIRO INTELIGENTE</b>\\n` +\n    `\\n` +\n    `<b>Bueiro:</b> ${msg.id_bueiro}\\n` +\n    `<b>Endereço:</b> ${endereco}\\n` +\n    `<b>Nível de obstrução:</b> ${obstrucao}%\\n` +\n    `<b>Distância medida:</b> ${distancia}\\n` +\n    `<b>Data/hora:</b> ${dataHora}\\n` +\n    `\\n` +\n    `⚠️ <b>Ação recomendada:</b> encaminhar equipe de zeladoria para limpeza preventiva, ` +\n    `a fim de evitar entupimento e risco de alagamento.\\n` +\n    `\\n` +\n    `📊 <a href=\"${LINK_DASHBOARD}\">Acompanhar no dashboard</a>`;\n\nmsg.url = `https://api.telegram.org/bot${token}/sendMessage`;\nmsg.method = 'POST';\nmsg.headers = { 'Content-Type': 'application/json' };\nmsg.payload = {\n    chat_id: chatId,\n    text: texto,\n    parse_mode: 'HTML',\n    disable_web_page_preview: true\n};\nreturn msg;",
+    "func": "const token = env.get('TELEGRAM_BOT_TOKEN');\nconst chatId = env.get('TELEGRAM_CHAT_ID');\n\nif (!token || !chatId) {\n    node.warn('Configure TELEGRAM_BOT_TOKEN e TELEGRAM_CHAT_ID nas variáveis de ambiente da aba.');\n    return null;\n}\n\n// Cadastro dos bueiros (mesmo da function \"Montar ponto InfluxDB\")\nconst cadastroBueiros = {\n    bueiro01: { endereco: 'Rua da Consolação, 930 - Consolação, São Paulo/SP' }\n};\n\nconst LINK_DASHBOARD = env.get('LINK_DASHBOARD') || 'https://vibrantminivan1185.grafana.net';\n\nconst local = cadastroBueiros[msg.id_bueiro];\nconst endereco = local ? local.endereco : 'Endereço não cadastrado';\n\nconst obstrucao = Number(msg.obstrucao_pct).toFixed(1);\nconst distancia = (msg.distancia_cm !== null && msg.distancia_cm !== undefined)\n    ? `${Number(msg.distancia_cm).toFixed(1)} cm`\n    : 'não disponível';\n\nconst dataHora = new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });\n\nconst texto =\n    `🚨 <b>ALERTA CRÍTICO – BUEIRO INTELIGENTE</b>\\n` +\n    `\\n` +\n    `<b>Bueiro:</b> ${msg.id_bueiro}\\n` +\n    `<b>Endereço:</b> ${endereco}\\n` +\n    `<b>Obstrução após a limpeza automática:</b> ${obstrucao}%\\n` +\n    `<b>Distância medida:</b> ${distancia}\\n` +\n    `<b>Data/hora:</b> ${dataHora}\\n` +\n    `\\n` +\n    `A grade autolimpante foi acionada, mas a obstrução permanece em nível crítico ` +\n    `(resíduos grandes demais para a remoção automática).\\n` +\n    `\\n` +\n    `⚠️ <b>Ação recomendada:</b> encaminhar equipe de zeladoria para limpeza manual, ` +\n    `a fim de evitar entupimento e risco de alagamento.\\n` +\n    `\\n` +\n    `📊 <a href=\"${LINK_DASHBOARD}\">Acompanhar no dashboard</a>`;\n\nmsg.url = `https://api.telegram.org/bot${token}/sendMessage`;\nmsg.method = 'POST';\nmsg.headers = { 'Content-Type': 'application/json' };\nmsg.payload = {\n    chat_id: chatId,\n    text: texto,\n    parse_mode: 'HTML',\n    disable_web_page_preview: true\n};\nreturn msg;",
     "outputs": 1,
     "timeout": 0,
     "noerr": 0,
     "initialize": "",
     "finalize": "",
     "libs": [],
-    "x": 640,
-    "y": 280,
+    "x": 1110,
+    "y": 380,
     "wires": [
       [
         "bi_http"
@@ -255,8 +393,8 @@
     "authType": "",
     "senderr": true,
     "headers": [],
-    "x": 900,
-    "y": 280,
+    "x": 1360,
+    "y": 380,
     "wires": [
       [
         "bi_dbg_tg"
@@ -276,73 +414,35 @@
     "targetType": "msg",
     "statusVal": "",
     "statusType": "auto",
-    "x": 1140,
-    "y": 280,
+    "x": 1580,
+    "y": 380,
     "wires": []
   },
   {
-    "id": "bi_dbg_leitura",
+    "id": "bi_dbg_ok",
     "type": "debug",
     "z": "bi_tab",
-    "name": "Leitura processada",
-    "active": false,
-    "tosidebar": true,
-    "console": false,
-    "tostatus": false,
-    "complete": "true",
-    "targetType": "full",
-    "statusVal": "",
-    "statusType": "auto",
-    "x": 650,
-    "y": 340,
-    "wires": []
-  },
-  {
-    "id": "bi_comment2",
-    "type": "comment",
-    "z": "bi_tab",
-    "name": "Monitoramento: confirmações do atuador e conexão dos dispositivos",
-    "info": "",
-    "x": 320,
-    "y": 420,
-    "wires": []
-  },
-  {
-    "id": "bi_in_conf",
-    "type": "mqtt in",
-    "z": "bi_tab",
-    "name": "atuador/confirmacao",
-    "topic": "mackenzie/bueiro-inteligente/+/atuador/confirmacao",
-    "qos": "1",
-    "datatype": "utf8",
-    "broker": "bi_broker",
-    "nl": false,
-    "rap": true,
-    "rh": 0,
-    "inputs": 0,
-    "x": 150,
-    "y": 480,
-    "wires": [
-      [
-        "bi_dbg_conf"
-      ]
-    ]
-  },
-  {
-    "id": "bi_dbg_conf",
-    "type": "debug",
-    "z": "bi_tab",
-    "name": "Confirmação do atuador",
+    "name": "Limpeza resolvida",
     "active": true,
     "tosidebar": true,
     "console": false,
-    "tostatus": true,
+    "tostatus": false,
     "complete": "payload",
     "targetType": "msg",
-    "statusVal": "payload",
+    "statusVal": "",
     "statusType": "auto",
-    "x": 430,
-    "y": 480,
+    "x": 1100,
+    "y": 440,
+    "wires": []
+  },
+  {
+    "id": "bi_comment3",
+    "type": "comment",
+    "z": "bi_tab",
+    "name": "Monitoramento: conexão dos dispositivos",
+    "info": "",
+    "x": 230,
+    "y": 520,
     "wires": []
   },
   {
@@ -359,7 +459,7 @@
     "rh": 0,
     "inputs": 0,
     "x": 120,
-    "y": 540,
+    "y": 580,
     "wires": [
       [
         "bi_fn_conex"
@@ -379,7 +479,7 @@
     "finalize": "",
     "libs": [],
     "x": 330,
-    "y": 540,
+    "y": 580,
     "wires": [
       [
         "bi_dbg_conex"
@@ -400,17 +500,17 @@
     "statusVal": "payload",
     "statusType": "auto",
     "x": 550,
-    "y": 540,
+    "y": 580,
     "wires": []
   },
   {
-    "id": "bi_comment3",
+    "id": "bi_comment4",
     "type": "comment",
     "z": "bi_tab",
     "name": "Tratamento de falhas (InfluxDB e Telegram)",
     "info": "",
     "x": 250,
-    "y": 620,
+    "y": 660,
     "wires": []
   },
   {
@@ -424,7 +524,7 @@
     ],
     "uncaught": false,
     "x": 160,
-    "y": 680,
+    "y": 720,
     "wires": [
       [
         "bi_dbg_erro"
@@ -445,7 +545,7 @@
     "statusVal": "",
     "statusType": "auto",
     "x": 390,
-    "y": 680,
+    "y": 720,
     "wires": []
   },
   {
